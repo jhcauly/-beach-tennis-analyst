@@ -15,6 +15,9 @@ dependencies = [
   "pyyaml>=6.0",
 ]
 
+[project.scripts]
+beach-tennis-analyze = "beach_tennis_analyst.cli:main"
+
 [project.optional-dependencies]
 vision = [
   "ultralytics>=8.3",
