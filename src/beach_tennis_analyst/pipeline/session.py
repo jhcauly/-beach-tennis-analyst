@@ -6,7 +6,9 @@ from pathlib import Path
 
 from beach_tennis_analyst.analytics.motion import MotionSummary, summarize_motion
 from beach_tennis_analyst.analytics.pair import PairFrame, PairSummary, build_pair_frames, summarize_pair
+from beach_tennis_analyst.calibration.camera_standard import validate_rear_server_camera
 from beach_tennis_analyst.calibration.court import BeachTennisCourt
+from beach_tennis_analyst.calibration.depth_confidence import projection_confidence_for_y
 from beach_tennis_analyst.calibration.manual import ManualCalibration
 from beach_tennis_analyst.calibration.projection import CourtProjector
 from beach_tennis_analyst.detection.player_detector import PlayerDetector, PlayerDetectorConfig
@@ -29,7 +31,7 @@ class SessionOutputs:
 
 
 class BeachTennisAnalysisPipeline:
-    """Runs the camera-only M1 pipeline from video to spatial summaries."""
+    """Runs the rear-camera M1 pipeline from video to spatial summaries."""
 
     def __init__(
         self,
@@ -58,6 +60,13 @@ class BeachTennisAnalysisPipeline:
         ):
             raise ValueError("Calibration dimensions do not match video dimensions")
 
+        camera_report = validate_rear_server_camera(calibration)
+        if not camera_report.valid:
+            raise ValueError(
+                "Calibration does not match the rear-camera-behind-server standard: "
+                + "; ".join(camera_report.warnings)
+            )
+
         projector = CourtProjector(calibration, BeachTennisCourt())
         detector = PlayerDetector(self.detector_config)
         tracker = FourPlayerTracker(projector)
@@ -68,10 +77,11 @@ class BeachTennisAnalysisPipeline:
             assignments = tracker.update(detections, frame_index)
             for assignment in assignments:
                 identity_confidence = assignment.assignment_confidence
+                projection_confidence = projection_confidence_for_y(assignment.y_m)
                 confidence = Confidence(
                     detection=assignment.detection.confidence,
                     identity=identity_confidence,
-                    projection=1.0,
+                    projection=projection_confidence,
                     trajectory=identity_confidence,
                 )
                 identity_status = (
