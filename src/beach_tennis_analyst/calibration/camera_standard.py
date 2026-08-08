@@ -38,7 +38,9 @@ def validate_rear_server_camera(calibration: ManualCalibration) -> CameraStandar
         warnings.append("court perspective ratio is outside the expected rear-camera range")
     if center_offset_ratio > 0.20:
         warnings.append("camera appears too far from the court centerline")
-    if near_left.y >= far_left.y or near_right.y >= far_right.y:
+    # Image coordinates grow downward. For a rear camera, the near corners must
+    # therefore have a larger y coordinate (appear lower) than the far corners.
+    if near_left.y <= far_left.y or near_right.y <= far_right.y:
         warnings.append("near corners must appear lower in the image than far corners")
 
     return CameraStandardReport(
