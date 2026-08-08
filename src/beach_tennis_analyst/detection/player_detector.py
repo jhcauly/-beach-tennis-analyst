@@ -15,16 +15,19 @@ class DetectorUnavailableError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class PlayerDetectorConfig:
     model_path: str = "yolo11n.pt"
-    confidence_threshold: float = 0.35
+    confidence_threshold: float = 0.20
     iou_threshold: float = 0.50
     tracker_config: str = "botsort.yaml"
     person_class_id: int = 0
+    image_size: int = 1280
 
     def __post_init__(self) -> None:
         if not 0.0 < self.confidence_threshold <= 1.0:
             raise ValueError("confidence_threshold must be in (0, 1]")
         if not 0.0 < self.iou_threshold <= 1.0:
             raise ValueError("iou_threshold must be in (0, 1]")
+        if self.image_size <= 0:
+            raise ValueError("image_size must be positive")
 
 
 class PlayerDetector:
@@ -55,6 +58,7 @@ class PlayerDetector:
             conf=self.config.confidence_threshold,
             iou=self.config.iou_threshold,
             tracker=self.config.tracker_config,
+            imgsz=self.config.image_size,
             verbose=False,
         )[0]
 
