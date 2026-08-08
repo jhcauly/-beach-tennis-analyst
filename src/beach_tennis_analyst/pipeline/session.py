@@ -313,6 +313,7 @@ class BeachTennisAnalysisPipeline:
             trajectories=trajectories,
             ball_track=list(ball.track),
             shots=shots,
+            projector=projector,
         )
         export_review_clips(
             video_path=video_path,
