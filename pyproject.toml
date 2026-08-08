@@ -18,6 +18,7 @@ dependencies = [
 [project.scripts]
 beach-tennis-analyze = "beach_tennis_analyst.cli:main"
 beach-tennis-calibrate = "beach_tennis_analyst.calibration.visual:main"
+beach-tennis-launcher = "beach_tennis_analyst.launcher:main"
 
 [project.optional-dependencies]
 vision = [
