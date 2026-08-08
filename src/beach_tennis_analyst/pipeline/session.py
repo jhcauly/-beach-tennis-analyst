@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -43,7 +44,7 @@ class SessionOutputs:
 
 
 class BeachTennisAnalysisPipeline:
-    """Runs the rear-camera pipeline from video to spatial, ball and review outputs."""
+    """Runs the rear-camera athlete-tracking homologation pipeline."""
 
     def __init__(
         self,
@@ -52,6 +53,7 @@ class BeachTennisAnalysisPipeline:
         trajectory_config: TrajectoryConfig | None = None,
         max_initialization_frames: int = 300,
         track_near_only: bool = True,
+        analyze_ball: bool = False,
     ) -> None:
         if max_initialization_frames <= 0:
             raise ValueError("max_initialization_frames must be positive")
@@ -59,6 +61,7 @@ class BeachTennisAnalysisPipeline:
         self.trajectory_config = trajectory_config or TrajectoryConfig()
         self.max_initialization_frames = max_initialization_frames
         self.track_near_only = track_near_only
+        self.analyze_ball = analyze_ball
 
     def run(
         self,
@@ -112,16 +115,25 @@ class BeachTennisAnalysisPipeline:
             side: summarize_pair(frames) for side, frames in pair_frames.items() if frames
         }
 
-        ball = BallAnalysisPipeline(projector).run(
-            VideoReader(video_path).frames(),
-            trajectories,
-        )
-        shots = build_shot_events(
-            list(ball.contacts),
-            list(ball.rallies),
-            list(ball.track),
-            projector,
-        )
+        if self.analyze_ball:
+            ball = BallAnalysisPipeline(projector).run(
+                VideoReader(video_path).frames(),
+                trajectories,
+            )
+            shots = build_shot_events(
+                list(ball.contacts),
+                list(ball.rallies),
+                list(ball.track),
+                projector,
+            )
+        else:
+            ball = BallPipelineOutputs(
+                detections=(),
+                track=(),
+                contacts=(),
+                rallies=(),
+            )
+            shots = []
 
         self._export_outputs(
             output=output,
@@ -264,11 +276,28 @@ class BeachTennisAnalysisPipeline:
         records.sort(key=lambda item: (item.frame_index, item.athlete_id))
         export_csv(records, output / "trajectories.csv")
         export_jsonl(records, output / "trajectories.jsonl")
-        export_ball_track(ball.track, output / "ball_track.jsonl")
-        export_rallies(ball.rallies, output / "rallies.json")
-        export_shots(shots, output / "shots.jsonl")
 
-        ball_report = build_ball_report(shots)
+        if self.analyze_ball:
+            export_ball_track(ball.track, output / "ball_track.jsonl")
+            export_rallies(ball.rallies, output / "rallies.json")
+            export_shots(shots, output / "shots.jsonl")
+            ball_report: dict[str, object] = build_ball_report(shots)
+            (output / "ball_report.json").write_text(
+                json.dumps(ball_report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        else:
+            ball_report = {"enabled": False}
+            for filename in (
+                "ball_track.jsonl",
+                "rallies.json",
+                "shots.jsonl",
+                "ball_report.json",
+            ):
+                (output / filename).unlink(missing_ok=True)
+            review_dir = output / "review_clips"
+            if review_dir.exists():
+                shutil.rmtree(review_dir)
+
         payload = {
             "video": {
                 "path": str(metadata.path),
@@ -280,6 +309,7 @@ class BeachTennisAnalysisPipeline:
                 "codec": metadata.codec,
             },
             "tracking_scope": "near_pair" if self.track_near_only else "all_four_players",
+            "court_scope": "camera_side_of_net" if self.track_near_only else "full_court",
             "athletes": {
                 athlete_id: asdict(summary) for athlete_id, summary in athlete_summaries.items()
             },
@@ -288,9 +318,6 @@ class BeachTennisAnalysisPipeline:
         }
         (output / "summary.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        (output / "ball_report.json").write_text(
-            json.dumps(ball_report, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
         for side, frames in pair_frames.items():
@@ -304,19 +331,20 @@ class BeachTennisAnalysisPipeline:
             fps=metadata.fps,
             frame_count=metadata.frame_count,
             trajectories=trajectories,
-            ball_track=list(ball.track),
+            ball_track=list(ball.track) if self.analyze_ball else [],
             projector=projector,
         )
         render_annotated_match(
             video_path=video_path,
             output_path=output / "annotated_match.mp4",
             trajectories=trajectories,
-            ball_track=list(ball.track),
-            shots=shots,
+            ball_track=list(ball.track) if self.analyze_ball else [],
+            shots=shots if self.analyze_ball else [],
             projector=projector,
         )
-        export_review_clips(
-            video_path=video_path,
-            shots=shots,
-            output_dir=output / "review_clips",
-        )
+        if self.analyze_ball:
+            export_review_clips(
+                video_path=video_path,
+                shots=shots,
+                output_dir=output / "review_clips",
+            )
