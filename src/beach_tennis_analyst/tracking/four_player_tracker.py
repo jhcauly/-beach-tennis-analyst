@@ -25,8 +25,10 @@ class TrackAssignment:
 class FourPlayerTracker:
     """Owns stable athlete identities independently from detector track IDs.
 
-    The tracker can operate in the original four-player mode or in a near-side
-    two-player mode for homologation focused on the pair closest to the camera.
+    The tracker can operate in the original four-player mode or in a two-player
+    homologation mode focused on the pair closest to the camera. In near-only
+    mode, the pair is selected by court depth instead of requiring both feet to
+    project strictly to the near half of the court.
     """
 
     def __init__(
@@ -48,39 +50,47 @@ class FourPlayerTracker:
 
     def initialize(self, detections: Iterable[Detection], frame_index: int = 0) -> list[TrackAssignment]:
         projected = self._project_valid_detections(detections)
-        near_candidates = [
-            item for item in projected if item[2] < self.projector.court.net_y_m
-        ]
-        far_candidates = [
-            item for item in projected if item[2] >= self.projector.court.net_y_m
-        ]
 
-        if len(near_candidates) < 2:
-            raise TrackingInitializationError(
-                "Expected at least two athletes on the near side of the net, "
-                f"got near={len(near_candidates)}, far={len(far_candidates)}, "
-                f"total_on_court={len(projected)}"
-            )
-        if not self.near_only and len(far_candidates) < 2:
-            raise TrackingInitializationError(
-                "Expected at least two athletes on each side of the net, "
-                f"got near={len(near_candidates)}, far={len(far_candidates)}, "
-                f"total_on_court={len(projected)}"
-            )
+        if self.near_only:
+            if len(projected) < 2:
+                raise TrackingInitializationError(
+                    "Expected at least two on-court athlete detections for the camera-side pair, "
+                    f"got total_on_court={len(projected)}"
+                )
 
-        near = sorted(
-            sorted(near_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
-            key=lambda item: item[1],
-        )
-        groups: list[tuple[TeamSide, list[tuple[Detection, float, float]]]] = [
-            (TeamSide.NEAR, near)
-        ]
-        if not self.near_only:
+            # For homologation we care about the two athletes closest to the camera.
+            # Court depth (smaller metric y) is more robust than a hard net-half split,
+            # especially when a foot point lands close to the projected net boundary.
+            near = sorted(
+                sorted(projected, key=lambda item: (item[2], -item[0].confidence))[:2],
+                key=lambda item: item[1],
+            )
+            groups: list[tuple[TeamSide, list[tuple[Detection, float, float]]]] = [
+                (TeamSide.NEAR, near)
+            ]
+        else:
+            near_candidates = [
+                item for item in projected if item[2] < self.projector.court.net_y_m
+            ]
+            far_candidates = [
+                item for item in projected if item[2] >= self.projector.court.net_y_m
+            ]
+            if len(near_candidates) < 2 or len(far_candidates) < 2:
+                raise TrackingInitializationError(
+                    "Expected at least two athletes on each side of the net, "
+                    f"got near={len(near_candidates)}, far={len(far_candidates)}, "
+                    f"total_on_court={len(projected)}"
+                )
+
+            near = sorted(
+                sorted(near_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
+                key=lambda item: item[1],
+            )
             far = sorted(
                 sorted(far_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
                 key=lambda item: item[1],
             )
-            groups.append((TeamSide.FAR, far))
+            groups = [(TeamSide.NEAR, near), (TeamSide.FAR, far)]
 
         assignments: list[TrackAssignment] = []
         for side, group in groups:
@@ -120,17 +130,20 @@ class FourPlayerTracker:
                 track.missed_frames += 1
                 continue
 
-            same_side = [
-                item for item in unused
-                if self.projector.court.side_for_y(item[2]) == track.team_side.value
-            ]
-            if not same_side:
+            if self.near_only:
+                eligible = unused
+            else:
+                eligible = [
+                    item for item in unused
+                    if self.projector.court.side_for_y(item[2]) == track.team_side.value
+                ]
+            if not eligible:
                 track.missed_frames += 1
                 continue
 
             previous_x, previous_y = track.last_position_m
             detection, x_m, y_m = min(
-                same_side,
+                eligible,
                 key=lambda item: hypot(item[1] - previous_x, item[2] - previous_y),
             )
             distance = hypot(x_m - previous_x, y_m - previous_y)
