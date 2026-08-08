@@ -25,10 +25,9 @@ class TrackAssignment:
 class FourPlayerTracker:
     """Owns stable athlete identities independently from detector track IDs.
 
-    The tracker can operate in the original four-player mode or in a two-player
-    homologation mode focused on the pair closest to the camera. In near-only
-    mode, the pair is selected by court depth instead of requiring both feet to
-    project strictly to the near half of the court.
+    In near-only homologation mode, only athletes on the camera-side half of the
+    court are eligible. Detections beyond the calibrated net line are rejected so
+    a lost near-side identity cannot jump to an athlete on the far side.
     """
 
     def __init__(
@@ -36,33 +35,42 @@ class FourPlayerTracker:
         projector: CourtProjector,
         maximum_match_distance_m: float = 2.5,
         near_only: bool = False,
+        near_side_tolerance_m: float = 0.35,
     ) -> None:
         if maximum_match_distance_m <= 0:
             raise ValueError("maximum_match_distance_m must be positive")
+        if near_side_tolerance_m < 0:
+            raise ValueError("near_side_tolerance_m cannot be negative")
         self.projector = projector
         self.maximum_match_distance_m = maximum_match_distance_m
         self.near_only = near_only
+        self.near_side_tolerance_m = near_side_tolerance_m
         self.tracks: dict[str, AthleteTrack] = {}
 
     @property
     def expected_track_count(self) -> int:
         return 2 if self.near_only else 4
 
+    @property
+    def near_side_max_y_m(self) -> float:
+        return self.projector.court.net_y_m + self.near_side_tolerance_m
+
     def initialize(self, detections: Iterable[Detection], frame_index: int = 0) -> list[TrackAssignment]:
         projected = self._project_valid_detections(detections)
 
         if self.near_only:
-            if len(projected) < 2:
+            near_candidates = [item for item in projected if self._is_near_side(item[2])]
+            if len(near_candidates) < 2:
                 raise TrackingInitializationError(
-                    "Expected at least two on-court athlete detections for the camera-side pair, "
-                    f"got total_on_court={len(projected)}"
+                    "Expected at least two athlete detections on the camera-side half of the court, "
+                    f"got near={len(near_candidates)}, total_on_court={len(projected)}"
                 )
 
-            # For homologation we care about the two athletes closest to the camera.
-            # Court depth (smaller metric y) is more robust than a hard net-half split,
-            # especially when a foot point lands close to the projected net boundary.
+            # The homologation target is the near-side pair. Once the net line is
+            # used as a hard eligibility boundary, confidence is a safer initializer
+            # than taking candidates from the far half by depth.
             near = sorted(
-                sorted(projected, key=lambda item: (item[2], -item[0].confidence))[:2],
+                sorted(near_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
                 key=lambda item: item[1],
             )
             groups: list[tuple[TeamSide, list[tuple[Detection, float, float]]]] = [
@@ -81,7 +89,6 @@ class FourPlayerTracker:
                     f"got near={len(near_candidates)}, far={len(far_candidates)}, "
                     f"total_on_court={len(projected)}"
                 )
-
             near = sorted(
                 sorted(near_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
                 key=lambda item: item[1],
@@ -131,7 +138,7 @@ class FourPlayerTracker:
                 continue
 
             if self.near_only:
-                eligible = unused
+                eligible = [item for item in unused if self._is_near_side(item[2])]
             else:
                 eligible = [
                     item for item in unused
@@ -167,6 +174,9 @@ class FourPlayerTracker:
                 )
             )
         return assignments
+
+    def _is_near_side(self, y_m: float) -> bool:
+        return y_m <= self.near_side_max_y_m
 
     def _project_valid_detections(self, detections: Iterable[Detection]) -> list[tuple[Detection, float, float]]:
         projected: list[tuple[Detection, float, float]] = []
