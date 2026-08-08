@@ -51,12 +51,14 @@ class BeachTennisAnalysisPipeline:
         detector_config: PlayerDetectorConfig | None = None,
         trajectory_config: TrajectoryConfig | None = None,
         max_initialization_frames: int = 300,
+        track_near_only: bool = True,
     ) -> None:
         if max_initialization_frames <= 0:
             raise ValueError("max_initialization_frames must be positive")
         self.detector_config = detector_config or PlayerDetectorConfig()
         self.trajectory_config = trajectory_config or TrajectoryConfig()
         self.max_initialization_frames = max_initialization_frames
+        self.track_near_only = track_near_only
 
     def run(
         self,
@@ -85,10 +87,12 @@ class BeachTennisAnalysisPipeline:
 
         projector = CourtProjector(calibration, BeachTennisCourt())
         raw = self._track_players(reader, projector)
-        required_ids = {"near_left", "near_right", "far_left", "far_right"}
+        required_ids = {"near_left", "near_right"}
+        if not self.track_near_only:
+            required_ids |= {"far_left", "far_right"}
         missing = required_ids - raw.keys()
         if missing:
-            raise RuntimeError(f"Could not build all four trajectories: {sorted(missing)}")
+            raise RuntimeError(f"Could not build required trajectories: {sorted(missing)}")
 
         processor = TrajectoryProcessor(self.trajectory_config)
         trajectories = {athlete_id: processor.process(frames) for athlete_id, frames in raw.items()}
@@ -98,11 +102,12 @@ class BeachTennisAnalysisPipeline:
         pair_frames = {
             "near": build_pair_frames(
                 trajectories["near_left"], trajectories["near_right"], team_side="near"
-            ),
-            "far": build_pair_frames(
-                trajectories["far_left"], trajectories["far_right"], team_side="far"
-            ),
+            )
         }
+        if not self.track_near_only:
+            pair_frames["far"] = build_pair_frames(
+                trajectories["far_left"], trajectories["far_right"], team_side="far"
+            )
         pair_summaries = {
             side: summarize_pair(frames) for side, frames in pair_frames.items() if frames
         }
@@ -147,7 +152,7 @@ class BeachTennisAnalysisPipeline:
         projector: CourtProjector,
     ) -> dict[str, list[PlayerFrame]]:
         detector = PlayerDetector(self.detector_config)
-        tracker = FourPlayerTracker(projector)
+        tracker = FourPlayerTracker(projector, near_only=self.track_near_only)
         raw: dict[str, list[PlayerFrame]] = {}
         frames_seen = 0
         max_detector_candidates = 0
@@ -166,15 +171,16 @@ class BeachTennisAnalysisPipeline:
             except TrackingInitializationError as exc:
                 last_initialization_error = str(exc)
                 if frames_seen >= self.max_initialization_frames:
+                    target = "near-side two-player" if self.track_near_only else "four-player"
                     raise TrackingInitializationError(
-                        "Could not initialize four-player tracking within "
+                        f"Could not initialize {target} tracking within "
                         f"{self.max_initialization_frames} frames; "
                         f"max detector candidates in one frame={max_detector_candidates}; "
                         f"last initialization error: {last_initialization_error}"
                     ) from exc
                 continue
 
-            if len(tracker.tracks) == 4:
+            if len(tracker.tracks) == tracker.expected_track_count:
                 initialized = True
 
             for assignment in assignments:
@@ -209,9 +215,10 @@ class BeachTennisAnalysisPipeline:
                 )
 
         if not initialized:
-            detail = last_initialization_error or "no valid four-player initialization was observed"
+            detail = last_initialization_error or "no valid initialization was observed"
+            target = "near-side two-player" if self.track_near_only else "four-player"
             raise TrackingInitializationError(
-                "Video ended before four-player tracking could initialize; "
+                f"Video ended before {target} tracking could initialize; "
                 f"frames inspected={frames_seen}; "
                 f"max detector candidates in one frame={max_detector_candidates}; "
                 f"last initialization error: {detail}"
@@ -272,6 +279,7 @@ class BeachTennisAnalysisPipeline:
                 "duration_s": metadata.duration_s,
                 "codec": metadata.codec,
             },
+            "tracking_scope": "near_pair" if self.track_near_only else "all_four_players",
             "athletes": {
                 athlete_id: asdict(summary) for athlete_id, summary in athlete_summaries.items()
             },
