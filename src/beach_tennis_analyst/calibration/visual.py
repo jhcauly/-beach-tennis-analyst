@@ -93,6 +93,14 @@ def top_down_preview(frame: np.ndarray, calibration: ManualCalibration, scale: i
     return warped
 
 
+def reference_frame_path(video_path: str | Path, output_json: str | Path) -> Path:
+    """Return referencia/<video_stem>.jpg beside the calibration output."""
+    output_parent = Path(output_json).resolve().parent
+    reference_dir = output_parent / "referencia"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    return reference_dir / f"{Path(video_path).stem}.jpg"
+
+
 def run_visual_calibration(
     video_path: str | Path,
     output_json: str | Path,
@@ -139,6 +147,11 @@ def run_visual_calibration(
                 print(json.dumps({"valid": False, "warnings": report.warnings}, ensure_ascii=False, indent=2))
                 continue
             calibration.save(output_json)
+
+            reference_path = reference_frame_path(video_path, output_json)
+            if not cv2.imwrite(str(reference_path), frame):
+                raise RuntimeError(f"Could not save reference frame: {reference_path}")
+
             if preview_path is not None:
                 cv2.imwrite(str(preview_path), draw_calibration_preview(frame, calibration))
             if top_down_path is not None:
@@ -161,8 +174,10 @@ def main() -> int:
     calibration = run_visual_calibration(args.video, args.output, args.preview, args.top_down)
     report = validate_rear_server_camera(calibration)
     projector = CourtProjector(calibration, BeachTennisCourt())
+    ref_path = reference_frame_path(args.video, args.output)
     print(json.dumps({
         "saved": str(args.output),
+        "reference_frame": str(ref_path),
         "valid": report.valid,
         "perspective_ratio": report.perspective_ratio,
         "center_offset_ratio": report.center_offset_ratio,
