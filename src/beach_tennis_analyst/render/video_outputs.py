@@ -54,6 +54,7 @@ def render_annotated_match(
     trajectories: dict[str, list[PlayerFrame]],
     ball_track: list[BallTrackPoint],
     shots: list[ShotEvent],
+    projector: CourtProjector,
 ) -> None:
     reader = VideoReader(video_path)
     metadata = reader.inspect()
@@ -68,16 +69,12 @@ def render_annotated_match(
     shot_by_frame = {shot.contact.frame_index: shot for shot in shots}
     try:
         for frame_index, _, frame in reader.frames():
+            _draw_projected_court(frame, projector)
             for player in players.get(frame_index, []):
-                cv2.putText(
-                    frame,
-                    player.athlete_id,
-                    (15, 28 + 22 * len(players.get(frame_index, []))),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (255, 255, 255),
-                    2,
-                )
+                if player.athlete_id not in {"near_left", "near_right"}:
+                    continue
+                _draw_player_identity_box(frame, player, projector)
+
             point = ball.get(frame_index)
             if point is not None:
                 cv2.circle(frame, (round(point.x_px), round(point.y_px)), 7, (0, 255, 255), 2)
@@ -88,6 +85,73 @@ def render_annotated_match(
             writer.write(frame)
     finally:
         writer.release()
+
+
+def _draw_player_identity_box(
+    frame: np.ndarray,
+    player: PlayerFrame,
+    projector: CourtProjector,
+) -> None:
+    foot_x, foot_y = projector.metric_to_pixel(player.x_m, player.y_m)
+    frame_h, frame_w = frame.shape[:2]
+
+    depth_ratio = min(max(player.y_m / 16.0, 0.0), 1.0)
+    box_height = round(210 - 115 * depth_ratio)
+    box_height = max(85, min(230, box_height))
+    box_width = round(box_height * 0.42)
+
+    x1 = max(0, round(foot_x - box_width / 2))
+    x2 = min(frame_w - 1, round(foot_x + box_width / 2))
+    y2 = min(frame_h - 1, round(foot_y))
+    y1 = max(0, y2 - box_height)
+
+    red = (0, 0, 255)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), red, 3)
+
+    label = f"{player.athlete_id} | {player.identity_status.value}"
+    text_y = max(22, y1 - 8)
+    cv2.putText(
+        frame,
+        label,
+        (x1, text_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        red,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.circle(frame, (round(foot_x), round(foot_y)), 5, red, -1)
+
+
+def _draw_projected_court(frame: np.ndarray, projector: CourtProjector) -> None:
+    corners_metric = [(0.0, 0.0), (8.0, 0.0), (8.0, 16.0), (0.0, 16.0)]
+    corners_px = np.asarray(
+        [[round(x), round(y)] for x, y in (projector.metric_to_pixel(x_m, y_m) for x_m, y_m in corners_metric)],
+        dtype=np.int32,
+    )
+    court_color = (0, 255, 255)
+    cv2.polylines(frame, [corners_px], isClosed=True, color=court_color, thickness=3, lineType=cv2.LINE_AA)
+
+    net_left = projector.metric_to_pixel(0.0, 8.0)
+    net_right = projector.metric_to_pixel(8.0, 8.0)
+    cv2.line(
+        frame,
+        (round(net_left[0]), round(net_left[1])),
+        (round(net_right[0]), round(net_right[1])),
+        court_color,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        "COURT",
+        (round(corners_px[0][0]), max(22, round(corners_px[0][1]) - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        court_color,
+        2,
+        cv2.LINE_AA,
+    )
 
 
 def _players_by_frame(trajectories: dict[str, list[PlayerFrame]]) -> dict[int, list[PlayerFrame]]:
