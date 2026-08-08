@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Callable
 
 from beach_tennis_analyst.analytics.ball_report import build_ball_report
 from beach_tennis_analyst.analytics.motion import MotionSummary, summarize_motion
@@ -29,6 +31,9 @@ from beach_tennis_analyst.tracking.four_player_tracker import (
     TrackingInitializationError,
 )
 from beach_tennis_analyst.tracking.trajectory import TrajectoryConfig, TrajectoryProcessor
+
+
+ProgressCallback = Callable[[dict[str, object]], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,12 +73,27 @@ class BeachTennisAnalysisPipeline:
         video_path: str | Path,
         calibration_path: str | Path,
         output_dir: str | Path,
+        progress_callback: ProgressCallback | None = None,
     ) -> SessionOutputs:
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
 
         reader = VideoReader(video_path)
         metadata = reader.inspect()
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "analysis_start",
+                    "phase": "tracking",
+                    "processed_frames": 0,
+                    "total_frames": metadata.frame_count,
+                    "percent": 0.0,
+                    "elapsed_s": 0.0,
+                    "processing_fps": 0.0,
+                    "eta_s": None,
+                }
+            )
+
         calibration = ManualCalibration.load(calibration_path)
         if (
             calibration.source_width_px != metadata.width_px
@@ -89,7 +109,12 @@ class BeachTennisAnalysisPipeline:
             )
 
         projector = CourtProjector(calibration, BeachTennisCourt())
-        raw = self._track_players(reader, projector)
+        raw = self._track_players(
+            reader,
+            projector,
+            total_frames=metadata.frame_count,
+            progress_callback=progress_callback,
+        )
         required_ids = {"near_left", "near_right"}
         if not self.track_near_only:
             required_ids |= {"far_left", "far_right"}
@@ -135,6 +160,17 @@ class BeachTennisAnalysisPipeline:
             )
             shots = []
 
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "analysis_stage",
+                    "phase": "exporting",
+                    "processed_frames": metadata.frame_count,
+                    "total_frames": metadata.frame_count,
+                    "percent": 100.0,
+                }
+            )
+
         self._export_outputs(
             output=output,
             video_path=video_path,
@@ -147,6 +183,19 @@ class BeachTennisAnalysisPipeline:
             ball=ball,
             shots=shots,
         )
+
+        if progress_callback:
+            progress_callback(
+                {
+                    "event": "analysis_done",
+                    "phase": "done",
+                    "processed_frames": metadata.frame_count,
+                    "total_frames": metadata.frame_count,
+                    "percent": 100.0,
+                    "eta_s": 0.0,
+                }
+            )
+
         return SessionOutputs(
             metadata=metadata,
             trajectories=trajectories,
@@ -162,6 +211,9 @@ class BeachTennisAnalysisPipeline:
         self,
         reader: VideoReader,
         projector: CourtProjector,
+        *,
+        total_frames: int,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, list[PlayerFrame]]:
         detector = PlayerDetector(self.detector_config)
         tracker = FourPlayerTracker(projector, near_only=self.track_near_only)
@@ -170,6 +222,36 @@ class BeachTennisAnalysisPipeline:
         max_detector_candidates = 0
         last_initialization_error: str | None = None
         initialized = False
+        started_at = time.perf_counter()
+        last_progress_at = 0.0
+
+        def emit_progress(*, force: bool = False) -> None:
+            nonlocal last_progress_at
+            if not progress_callback:
+                return
+            now = time.perf_counter()
+            if not force and now - last_progress_at < 0.5:
+                return
+            last_progress_at = now
+            elapsed = max(0.0, now - started_at)
+            rate = frames_seen / elapsed if elapsed > 0 else 0.0
+            total = max(1, total_frames)
+            percent = min(100.0, (frames_seen / total) * 100.0)
+            remaining = max(0, total_frames - frames_seen)
+            eta = remaining / rate if rate > 0 else None
+            progress_callback(
+                {
+                    "event": "analysis_progress",
+                    "phase": "tracking",
+                    "processed_frames": frames_seen,
+                    "total_frames": total_frames,
+                    "percent": percent,
+                    "elapsed_s": elapsed,
+                    "processing_fps": rate,
+                    "eta_s": eta,
+                    "initialized": initialized,
+                }
+            )
 
         for frame_index, timestamp_s, frame in reader.frames():
             frames_seen += 1
@@ -182,6 +264,7 @@ class BeachTennisAnalysisPipeline:
                 assignments = tracker.update(detections, frame_index)
             except TrackingInitializationError as exc:
                 last_initialization_error = str(exc)
+                emit_progress()
                 if frames_seen >= self.max_initialization_frames:
                     target = "near-side two-player" if self.track_near_only else "four-player"
                     raise TrackingInitializationError(
@@ -225,6 +308,9 @@ class BeachTennisAnalysisPipeline:
                         confidence=confidence,
                     )
                 )
+            emit_progress()
+
+        emit_progress(force=True)
 
         if not initialized:
             detail = last_initialization_error or "no valid initialization was observed"
