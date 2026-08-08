@@ -23,7 +23,10 @@ from beach_tennis_analyst.ingestion.video_reader import VideoMetadata, VideoRead
 from beach_tennis_analyst.render.video_outputs import render_annotated_match, render_movement_2d
 from beach_tennis_analyst.review.clip_exporter import export_review_clips
 from beach_tennis_analyst.tracking.confidence import FrameConfidence
-from beach_tennis_analyst.tracking.four_player_tracker import FourPlayerTracker
+from beach_tennis_analyst.tracking.four_player_tracker import (
+    FourPlayerTracker,
+    TrackingInitializationError,
+)
 from beach_tennis_analyst.tracking.trajectory import TrajectoryConfig, TrajectoryProcessor
 
 
@@ -47,9 +50,13 @@ class BeachTennisAnalysisPipeline:
         *,
         detector_config: PlayerDetectorConfig | None = None,
         trajectory_config: TrajectoryConfig | None = None,
+        max_initialization_frames: int = 300,
     ) -> None:
+        if max_initialization_frames <= 0:
+            raise ValueError("max_initialization_frames must be positive")
         self.detector_config = detector_config or PlayerDetectorConfig()
         self.trajectory_config = trajectory_config or TrajectoryConfig()
+        self.max_initialization_frames = max_initialization_frames
 
     def run(
         self,
@@ -142,9 +149,34 @@ class BeachTennisAnalysisPipeline:
         detector = PlayerDetector(self.detector_config)
         tracker = FourPlayerTracker(projector)
         raw: dict[str, list[PlayerFrame]] = {}
+        frames_seen = 0
+        max_detector_candidates = 0
+        last_initialization_error: str | None = None
+        initialized = False
+
         for frame_index, timestamp_s, frame in reader.frames():
+            frames_seen += 1
             detections = detector.detect(frame)
-            assignments = tracker.update(detections, frame_index)
+
+            if not initialized:
+                max_detector_candidates = max(max_detector_candidates, len(detections))
+
+            try:
+                assignments = tracker.update(detections, frame_index)
+            except TrackingInitializationError as exc:
+                last_initialization_error = str(exc)
+                if frames_seen >= self.max_initialization_frames:
+                    raise TrackingInitializationError(
+                        "Could not initialize four-player tracking within "
+                        f"{self.max_initialization_frames} frames; "
+                        f"max detector candidates in one frame={max_detector_candidates}; "
+                        f"last initialization error: {last_initialization_error}"
+                    ) from exc
+                continue
+
+            if len(tracker.tracks) == 4:
+                initialized = True
+
             for assignment in assignments:
                 identity_confidence = assignment.assignment_confidence
                 projection_confidence = projection_confidence_for_y(assignment.y_m)
@@ -175,6 +207,16 @@ class BeachTennisAnalysisPipeline:
                         confidence=confidence,
                     )
                 )
+
+        if not initialized:
+            detail = last_initialization_error or "no valid four-player initialization was observed"
+            raise TrackingInitializationError(
+                "Video ended before four-player tracking could initialize; "
+                f"frames inspected={frames_seen}; "
+                f"max detector candidates in one frame={max_detector_candidates}; "
+                f"last initialization error: {detail}"
+            )
+
         return raw
 
     def _export_outputs(
