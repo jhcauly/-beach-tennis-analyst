@@ -43,17 +43,31 @@ class FourPlayerTracker:
 
     def initialize(self, detections: Iterable[Detection], frame_index: int = 0) -> list[TrackAssignment]:
         projected = self._project_valid_detections(detections)
-        if len(projected) != 4:
+        near_candidates = [
+            item for item in projected if item[2] < self.projector.court.net_y_m
+        ]
+        far_candidates = [
+            item for item in projected if item[2] >= self.projector.court.net_y_m
+        ]
+
+        if len(near_candidates) < 2 or len(far_candidates) < 2:
             raise TrackingInitializationError(
-                f"Expected exactly four on-court player detections, got {len(projected)}"
+                "Expected at least two athletes on each side of the net, "
+                f"got near={len(near_candidates)}, far={len(far_candidates)}, "
+                f"total_on_court={len(projected)}"
             )
 
-        near = sorted((item for item in projected if item[2] < self.projector.court.net_y_m), key=lambda item: item[1])
-        far = sorted((item for item in projected if item[2] >= self.projector.court.net_y_m), key=lambda item: item[1])
-        if len(near) != 2 or len(far) != 2:
-            raise TrackingInitializationError(
-                f"Expected two athletes on each side of the net, got near={len(near)}, far={len(far)}"
-            )
+        # Extra detections can happen because of officials, bystanders or duplicate
+        # detector boxes. For initialization, keep the two most confident person
+        # detections on each side and then assign stable left/right identities by x.
+        near = sorted(
+            sorted(near_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
+            key=lambda item: item[1],
+        )
+        far = sorted(
+            sorted(far_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
+            key=lambda item: item[1],
+        )
 
         assignments: list[TrackAssignment] = []
         for side, group in ((TeamSide.NEAR, near), (TeamSide.FAR, far)):
