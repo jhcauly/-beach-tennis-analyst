@@ -19,18 +19,7 @@ POINT_LABELS = (
     "far_left",
 )
 
-
-def first_frame(video_path: str | Path) -> np.ndarray:
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
-    try:
-        ok, frame = capture.read()
-    finally:
-        capture.release()
-    if not ok or frame is None:
-        raise RuntimeError(f"Could not decode first frame: {video_path}")
-    return frame
+SUPPORTED_REFERENCE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 
 
 def calibration_from_points(frame: np.ndarray, points: list[tuple[int, int]]) -> ManualCalibration:
@@ -93,12 +82,34 @@ def top_down_preview(frame: np.ndarray, calibration: ManualCalibration, scale: i
     return warped
 
 
-def reference_frame_path(video_path: str | Path, output_json: str | Path) -> Path:
-    """Return referencia/<video_stem>.jpg beside the calibration output."""
-    output_parent = Path(output_json).resolve().parent
-    reference_dir = output_parent / "referencia"
+def reference_dir_for(video_path: str | Path) -> Path:
+    video = Path(video_path)
+    return video.resolve().parent.parent / "referencia"
+
+
+def find_reference_image(video_path: str | Path) -> Path:
+    video = Path(video_path)
+    reference_dir = reference_dir_for(video)
     reference_dir.mkdir(parents=True, exist_ok=True)
-    return reference_dir / f"{Path(video_path).stem}.jpg"
+
+    for extension in SUPPORTED_REFERENCE_EXTENSIONS:
+        candidate = reference_dir / f"{video.stem}{extension}"
+        if candidate.exists():
+            return candidate
+
+    expected = ", ".join(f"{video.stem}{ext}" for ext in SUPPORTED_REFERENCE_EXTENSIONS)
+    raise FileNotFoundError(
+        f"Reference image not found for video '{video.name}'. "
+        f"Place one of these files in '{reference_dir}': {expected}"
+    )
+
+
+def load_reference_image(video_path: str | Path) -> tuple[np.ndarray, Path]:
+    reference_path = find_reference_image(video_path)
+    frame = cv2.imread(str(reference_path))
+    if frame is None:
+        raise RuntimeError(f"Could not open reference image: {reference_path}")
+    return frame, reference_path
 
 
 def run_visual_calibration(
@@ -107,7 +118,7 @@ def run_visual_calibration(
     preview_path: str | Path | None = None,
     top_down_path: str | Path | None = None,
 ) -> ManualCalibration:
-    frame = first_frame(video_path)
+    frame, reference_path = load_reference_image(video_path)
     points: list[tuple[int, int]] = []
     window = "Beach Tennis Calibration"
 
@@ -147,21 +158,19 @@ def run_visual_calibration(
                 print(json.dumps({"valid": False, "warnings": report.warnings}, ensure_ascii=False, indent=2))
                 continue
             calibration.save(output_json)
-
-            reference_path = reference_frame_path(video_path, output_json)
-            if not cv2.imwrite(str(reference_path), frame):
-                raise RuntimeError(f"Could not save reference frame: {reference_path}")
-
             if preview_path is not None:
                 cv2.imwrite(str(preview_path), draw_calibration_preview(frame, calibration))
             if top_down_path is not None:
                 cv2.imwrite(str(top_down_path), top_down_preview(frame, calibration))
             cv2.destroyAllWindows()
+            print(json.dumps({"reference_image": str(reference_path)}, ensure_ascii=False))
             return calibration
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Click four court corners and save calibration.json")
+    parser = argparse.ArgumentParser(
+        description="Load referencia/<video_name>.jpg and click four court corners"
+    )
     parser.add_argument("video", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--preview", type=Path)
@@ -174,10 +183,10 @@ def main() -> int:
     calibration = run_visual_calibration(args.video, args.output, args.preview, args.top_down)
     report = validate_rear_server_camera(calibration)
     projector = CourtProjector(calibration, BeachTennisCourt())
-    ref_path = reference_frame_path(args.video, args.output)
+    ref_path = find_reference_image(args.video)
     print(json.dumps({
         "saved": str(args.output),
-        "reference_frame": str(ref_path),
+        "reference_image": str(ref_path),
         "valid": report.valid,
         "perspective_ratio": report.perspective_ratio,
         "center_offset_ratio": report.center_offset_ratio,
