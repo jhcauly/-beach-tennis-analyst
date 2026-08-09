@@ -25,7 +25,7 @@ def _discover_athlete_videos(video_path: str | Path) -> list[Path]:
 def _format_duration(seconds: float | None) -> str:
     if seconds is None or seconds < 0:
         return "--:--"
-    total = int(round(seconds))
+    total = round(seconds)
     hours, rem = divmod(total, 3600)
     minutes, secs = divmod(rem, 60)
     if hours:
@@ -82,7 +82,7 @@ def _create_thumbnail(video: Path, destination: Path) -> Path | None:
         scale = max(target_width / max(1, width), target_height / max(1, height))
         resized = cv2.resize(
             chosen,
-            (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+            (max(1, round(width * scale)), max(1, round(height * scale))),
             interpolation=cv2.INTER_AREA,
         )
         rh, rw = resized.shape[:2]
