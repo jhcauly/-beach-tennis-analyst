@@ -82,25 +82,38 @@ def top_down_preview(frame: np.ndarray, calibration: ManualCalibration, scale: i
     return warped
 
 
-def reference_dir_for(video_path: str | Path) -> Path:
-    video = Path(video_path)
-    return video.resolve().parent.parent / "referencia"
+def reference_dirs_for(video_path: str | Path) -> list[Path]:
+    video = Path(video_path).resolve()
+    candidates = [
+        video.parent / "referencia",
+        video.parent.parent / "referencia",
+    ]
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
 
 
 def find_reference_image(video_path: str | Path) -> Path:
     video = Path(video_path)
-    reference_dir = reference_dir_for(video)
-    reference_dir.mkdir(parents=True, exist_ok=True)
+    searched: list[Path] = []
 
-    for extension in SUPPORTED_REFERENCE_EXTENSIONS:
-        candidate = reference_dir / f"{video.stem}{extension}"
-        if candidate.exists():
-            return candidate
+    for reference_dir in reference_dirs_for(video):
+        reference_dir.mkdir(parents=True, exist_ok=True)
+        for extension in SUPPORTED_REFERENCE_EXTENSIONS:
+            candidate = reference_dir / f"{video.stem}{extension}"
+            searched.append(candidate)
+            if candidate.exists():
+                return candidate
 
-    expected = ", ".join(f"{video.stem}{ext}" for ext in SUPPORTED_REFERENCE_EXTENSIONS)
+    expected = ", ".join(str(path) for path in searched)
     raise FileNotFoundError(
         f"Reference image not found for video '{video.name}'. "
-        f"Place one of these files in '{reference_dir}': {expected}"
+        f"Place an image with the same file name in a 'referencia' folder. Searched: {expected}"
     )
 
 
@@ -169,7 +182,7 @@ def run_visual_calibration(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Load referencia/<video_name>.jpg and click four court corners"
+        description="Load a same-name image from a referencia folder and click four court corners"
     )
     parser.add_argument("video", type=Path)
     parser.add_argument("output", type=Path)
