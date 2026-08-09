@@ -65,6 +65,7 @@ body{{padding:12px}}
 .dashboard{{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:minmax(320px,47vh) minmax(320px,47vh);gap:10px;min-height:calc(100vh - 58px)}}
 .panel{{position:relative;overflow:hidden;background:var(--card);border:1px solid var(--line);border-radius:12px}}
 .panel-title{{position:absolute;z-index:3;top:8px;left:10px;background:rgba(18,50,91,.88);color:white;border-radius:7px;padding:5px 9px;font-size:12px;font-weight:700;pointer-events:none}}
+.sync-badge{{position:absolute;z-index:3;top:8px;right:10px;background:rgba(11,139,148,.88);color:white;border-radius:7px;padding:5px 9px;font-size:11px;font-weight:700;pointer-events:none}}
 video{{width:100%;height:100%;display:block;background:#0d1722;object-fit:contain}}
 iframe{{width:100%;height:100%;border:0;background:white}}
 .library{{display:grid;grid-template-columns:220px 1fr;height:100%;padding-top:34px}}
@@ -82,11 +83,13 @@ iframe{{width:100%;height:100%;border:0;background:white}}
 <main class="dashboard">
 <section class="panel">
 <div class="panel-title">VÍDEO ANALISADO + MARCAÇÕES</div>
-<video controls autoplay muted playsinline src="{escape(annotated)}"></video>
+<div class="sync-badge">MASTER</div>
+<video id="annotated-video" controls playsinline src="{escape(annotated)}"></video>
 </section>
 <section class="panel">
 <div class="panel-title">MOVIMENTO 2D DA DUPLA</div>
-<video controls autoplay muted loop playsinline src="{escape(movement_2d)}"></video>
+<div class="sync-badge">SINCRONIZADO</div>
+<video id="movement-video" controls muted playsinline src="{escape(movement_2d)}"></video>
 </section>
 <section class="panel">
 <div class="panel-title">ANÁLISE GRÁFICA</div>
@@ -102,18 +105,74 @@ iframe{{width:100%;height:100%;border:0;background:white}}
 </main>
 <script>
 const playlist = {playlist_json};
-const player = document.getElementById('athlete-player');
+const libraryPlayer = document.getElementById('athlete-player');
 const buttons = [...document.querySelectorAll('.video-item')];
+const master = document.getElementById('annotated-video');
+const follower = document.getElementById('movement-video');
+let syncing = false;
+const MAX_DRIFT_SECONDS = 0.08;
+
 function openVideo(index) {{
   const item = playlist[index];
   if (!item) return;
-  player.src = item.uri;
-  player.load();
-  player.play().catch(() => {{}});
+  libraryPlayer.src = item.uri;
+  libraryPlayer.load();
+  libraryPlayer.play().catch(() => {{}});
   buttons.forEach((button, i) => button.classList.toggle('active', i === index));
 }}
 buttons.forEach(button => button.addEventListener('click', () => openVideo(Number(button.dataset.index))));
 if (playlist.length) openVideo(0);
+
+function alignFollower(force = false) {{
+  if (!Number.isFinite(master.currentTime) || follower.readyState < 1) return;
+  const drift = Math.abs(follower.currentTime - master.currentTime);
+  if (force || drift > MAX_DRIFT_SECONDS) {{
+    syncing = true;
+    follower.currentTime = master.currentTime;
+    syncing = false;
+  }}
+  if (Math.abs(follower.playbackRate - master.playbackRate) > 0.001) {{
+    follower.playbackRate = master.playbackRate;
+  }}
+}}
+
+master.addEventListener('loadedmetadata', () => alignFollower(true));
+follower.addEventListener('loadedmetadata', () => alignFollower(true));
+master.addEventListener('play', () => {{
+  alignFollower(true);
+  follower.playbackRate = master.playbackRate;
+  follower.play().catch(() => {{}});
+}});
+master.addEventListener('pause', () => follower.pause());
+master.addEventListener('seeking', () => alignFollower(true));
+master.addEventListener('seeked', () => alignFollower(true));
+master.addEventListener('ratechange', () => {{
+  follower.playbackRate = master.playbackRate;
+}});
+master.addEventListener('timeupdate', () => alignFollower(false));
+master.addEventListener('ended', () => {{
+  follower.pause();
+  alignFollower(true);
+}});
+
+follower.addEventListener('play', () => {{
+  if (!syncing && master.paused) master.play().catch(() => {{}});
+}});
+follower.addEventListener('pause', () => {{
+  if (!syncing && !master.paused && !master.ended) master.pause();
+}});
+follower.addEventListener('seeking', () => {{
+  if (syncing || !Number.isFinite(follower.currentTime)) return;
+  syncing = true;
+  master.currentTime = follower.currentTime;
+  syncing = false;
+}});
+follower.addEventListener('ratechange', () => {{
+  if (syncing) return;
+  syncing = true;
+  master.playbackRate = follower.playbackRate;
+  syncing = false;
+}});
 </script>
 </body>
 </html>'''
