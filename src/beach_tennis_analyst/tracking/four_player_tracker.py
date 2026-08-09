@@ -22,13 +22,15 @@ class TrackAssignment:
     assignment_confidence: float
 
 
-class FourPlayerTracker:
-    """Owns stable athlete identities independently from detector track IDs.
+def _appearance_distance(a: tuple[float, ...] | None, b: tuple[float, ...] | None) -> float:
+    if a is None or b is None or len(a) != len(b):
+        return 0.5
+    similarity = sum(x * y for x, y in zip(a, b, strict=True))
+    return max(0.0, min(1.0, 1.0 - similarity))
 
-    In near-only homologation mode, only athletes on the camera-side half of the
-    court are eligible. Detections beyond the calibrated net line are rejected so
-    a lost near-side identity cannot jump to an athlete on the far side.
-    """
+
+class FourPlayerTracker:
+    """Owns stable athlete identities using court position plus clothing appearance."""
 
     def __init__(
         self,
@@ -36,15 +38,19 @@ class FourPlayerTracker:
         maximum_match_distance_m: float = 2.5,
         near_only: bool = False,
         near_side_tolerance_m: float = 0.35,
+        appearance_weight: float = 0.35,
     ) -> None:
         if maximum_match_distance_m <= 0:
             raise ValueError("maximum_match_distance_m must be positive")
         if near_side_tolerance_m < 0:
             raise ValueError("near_side_tolerance_m cannot be negative")
+        if not 0.0 <= appearance_weight <= 1.0:
+            raise ValueError("appearance_weight must be between 0 and 1")
         self.projector = projector
         self.maximum_match_distance_m = maximum_match_distance_m
         self.near_only = near_only
         self.near_side_tolerance_m = near_side_tolerance_m
+        self.appearance_weight = appearance_weight
         self.tracks: dict[str, AthleteTrack] = {}
 
     @property
@@ -65,10 +71,6 @@ class FourPlayerTracker:
                     "Expected at least two athlete detections on the camera-side half of the court, "
                     f"got near={len(near_candidates)}, total_on_court={len(projected)}"
                 )
-
-            # The homologation target is the near-side pair. Once the net line is
-            # used as a hard eligibility boundary, confidence is a safer initializer
-            # than taking candidates from the far half by depth.
             near = sorted(
                 sorted(near_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
                 key=lambda item: item[1],
@@ -77,26 +79,15 @@ class FourPlayerTracker:
                 (TeamSide.NEAR, near)
             ]
         else:
-            near_candidates = [
-                item for item in projected if item[2] < self.projector.court.net_y_m
-            ]
-            far_candidates = [
-                item for item in projected if item[2] >= self.projector.court.net_y_m
-            ]
+            near_candidates = [item for item in projected if item[2] < self.projector.court.net_y_m]
+            far_candidates = [item for item in projected if item[2] >= self.projector.court.net_y_m]
             if len(near_candidates) < 2 or len(far_candidates) < 2:
                 raise TrackingInitializationError(
                     "Expected at least two athletes on each side of the net, "
-                    f"got near={len(near_candidates)}, far={len(far_candidates)}, "
-                    f"total_on_court={len(projected)}"
+                    f"got near={len(near_candidates)}, far={len(far_candidates)}, total_on_court={len(projected)}"
                 )
-            near = sorted(
-                sorted(near_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
-                key=lambda item: item[1],
-            )
-            far = sorted(
-                sorted(far_candidates, key=lambda item: item[0].confidence, reverse=True)[:2],
-                key=lambda item: item[1],
-            )
+            near = sorted(sorted(near_candidates, key=lambda item: item[0].confidence, reverse=True)[:2], key=lambda item: item[1])
+            far = sorted(sorted(far_candidates, key=lambda item: item[0].confidence, reverse=True)[:2], key=lambda item: item[1])
             groups = [(TeamSide.NEAR, near), (TeamSide.FAR, far)]
 
         assignments: list[TrackAssignment] = []
@@ -110,18 +101,11 @@ class FourPlayerTracker:
                     initial_lane=lane,
                     last_frame_index=frame_index,
                     last_position_m=(x_m, y_m),
+                    appearance_vector=detection.appearance_vector,
                 )
                 track.register_detector_id(detection.detector_track_id)
                 self.tracks[athlete_id] = track
-                assignments.append(
-                    TrackAssignment(
-                        athlete_id=athlete_id,
-                        detection=detection,
-                        x_m=x_m,
-                        y_m=y_m,
-                        assignment_confidence=detection.confidence,
-                    )
-                )
+                assignments.append(TrackAssignment(athlete_id, detection, x_m, y_m, detection.confidence))
         return assignments
 
     def update(self, detections: Iterable[Detection], frame_index: int) -> list[TrackAssignment]:
@@ -140,39 +124,42 @@ class FourPlayerTracker:
             if self.near_only:
                 eligible = [item for item in unused if self._is_near_side(item[2])]
             else:
-                eligible = [
-                    item for item in unused
-                    if self.projector.court.side_for_y(item[2]) == track.team_side.value
-                ]
+                eligible = [item for item in unused if self.projector.court.side_for_y(item[2]) == track.team_side.value]
             if not eligible:
                 track.missed_frames += 1
                 continue
 
             previous_x, previous_y = track.last_position_m
-            detection, x_m, y_m = min(
-                eligible,
-                key=lambda item: hypot(item[1] - previous_x, item[2] - previous_y),
-            )
+
+            def match_cost(item: tuple[Detection, float, float]) -> float:
+                detection, x_m, y_m = item
+                spatial = hypot(x_m - previous_x, y_m - previous_y) / self.maximum_match_distance_m
+                appearance = _appearance_distance(track.appearance_vector, detection.appearance_vector)
+                detector_bonus = -0.12 if detection.detector_track_id in track.detector_ids else 0.0
+                return (1.0 - self.appearance_weight) * spatial + self.appearance_weight * appearance + detector_bonus
+
+            detection, x_m, y_m = min(eligible, key=match_cost)
             distance = hypot(x_m - previous_x, y_m - previous_y)
             if distance > self.maximum_match_distance_m:
                 track.missed_frames += 1
                 continue
 
+            appearance_distance = _appearance_distance(track.appearance_vector, detection.appearance_vector)
             unused.remove((detection, x_m, y_m))
             track.last_position_m = (x_m, y_m)
             track.last_frame_index = frame_index
             track.missed_frames = 0
             track.register_detector_id(detection.detector_track_id)
+            track.update_appearance(detection.appearance_vector)
+
             proximity_confidence = max(0.0, 1.0 - distance / self.maximum_match_distance_m)
-            assignments.append(
-                TrackAssignment(
-                    athlete_id=athlete_id,
-                    detection=detection,
-                    x_m=x_m,
-                    y_m=y_m,
-                    assignment_confidence=(detection.confidence + proximity_confidence) / 2.0,
-                )
+            appearance_confidence = max(0.0, 1.0 - appearance_distance)
+            assignment_confidence = (
+                0.45 * detection.confidence
+                + 0.35 * proximity_confidence
+                + 0.20 * appearance_confidence
             )
+            assignments.append(TrackAssignment(athlete_id, detection, x_m, y_m, assignment_confidence))
         return assignments
 
     def _is_near_side(self, y_m: float) -> bool:
