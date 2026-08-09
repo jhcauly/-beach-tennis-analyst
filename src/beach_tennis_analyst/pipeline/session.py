@@ -23,6 +23,7 @@ from beach_tennis_analyst.export.trajectory import TrajectoryRecord, export_csv,
 from beach_tennis_analyst.game.event_builder import build_shot_events
 from beach_tennis_analyst.game.events import ShotEvent
 from beach_tennis_analyst.ingestion.video_reader import VideoMetadata, VideoReader
+from beach_tennis_analyst.render.final_dashboard import render_final_dashboard
 from beach_tennis_analyst.render.performance_report import render_performance_report
 from beach_tennis_analyst.render.video_outputs import render_annotated_match, render_movement_2d
 from beach_tennis_analyst.review.clip_exporter import export_review_clips
@@ -220,17 +221,28 @@ class BeachTennisAnalysisPipeline:
                 for frame in frames:
                     handle.write(json.dumps(asdict(frame), ensure_ascii=False) + "\n")
 
-        render_movement_2d(output_path=output / "movement_2d.mp4", fps=metadata.fps, frame_count=metadata.frame_count, trajectories=trajectories, ball_track=list(ball.track) if self.analyze_ball else [], projector=projector)
-        render_annotated_match(video_path=video_path, output_path=output / "annotated_match.mp4", trajectories=trajectories, ball_track=list(ball.track) if self.analyze_ball else [], shots=shots if self.analyze_ball else [], projector=projector)
+        annotated_path = output / "annotated_match.mp4"
+        movement_2d_path = output / "movement_2d.mp4"
+        report_path = output / "performance_report.html"
+
+        render_movement_2d(output_path=movement_2d_path, fps=metadata.fps, frame_count=metadata.frame_count, trajectories=trajectories, ball_track=list(ball.track) if self.analyze_ball else [], projector=projector)
+        render_annotated_match(video_path=video_path, output_path=annotated_path, trajectories=trajectories, ball_track=list(ball.track) if self.analyze_ball else [], shots=shots if self.analyze_ball else [], projector=projector)
 
         if "near" in pair_summaries:
             render_performance_report(
-                output_path=output / "performance_report.html",
+                output_path=report_path,
                 video_name=Path(video_path).name,
                 trajectories=trajectories,
                 athlete_summaries=athlete_summaries,
                 pair_frames=pair_frames.get("near", []),
                 pair_summary=pair_summaries["near"],
+            )
+            render_final_dashboard(
+                output_path=output / "final_dashboard.html",
+                video_path=video_path,
+                annotated_video=annotated_path,
+                movement_2d_video=movement_2d_path,
+                performance_report=report_path,
             )
 
         if self.analyze_ball:
