@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from math import sqrt
 
 
 class TeamSide(StrEnum):
@@ -47,7 +48,23 @@ class AthleteTrack:
     last_position_m: tuple[float, float] | None = None
     missed_frames: int = 0
     detector_ids: set[int] = field(default_factory=set)
+    appearance_vector: tuple[float, ...] | None = None
 
     def register_detector_id(self, detector_track_id: int | None) -> None:
         if detector_track_id is not None:
             self.detector_ids.add(detector_track_id)
+
+    def update_appearance(self, vector: tuple[float, ...] | None, alpha: float = 0.20) -> None:
+        if vector is None:
+            return
+        if self.appearance_vector is None or len(self.appearance_vector) != len(vector):
+            self.appearance_vector = vector
+            return
+        mixed = [
+            (1.0 - alpha) * old + alpha * new
+            for old, new in zip(self.appearance_vector, vector, strict=True)
+        ]
+        norm = sqrt(sum(value * value for value in mixed))
+        if norm > 0:
+            mixed = [value / norm for value in mixed]
+        self.appearance_vector = tuple(mixed)
