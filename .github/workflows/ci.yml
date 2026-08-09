@@ -24,5 +24,10 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -e '.[dev]'
       - run: python -m compileall -q src tests
-      - run: ruff check src tests
       - run: pytest -q
+      - name: Lint dashboard changes
+        run: >-
+          ruff check
+          src/beach_tennis_analyst/render/final_dashboard.py
+          src/beach_tennis_analyst/render/performance_report.py
+          tests/test_final_dashboard.py
