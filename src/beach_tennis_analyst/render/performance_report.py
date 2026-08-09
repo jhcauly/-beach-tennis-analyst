@@ -15,7 +15,7 @@ def _fmt(value: float, digits: int = 2) -> str:
 
 
 def _duration(seconds: float) -> str:
-    total = max(0, int(round(seconds)))
+    total = max(0, round(seconds))
     minutes, secs = divmod(total, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
