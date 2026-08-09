@@ -212,7 +212,7 @@ iframe{{width:100%;height:100%;border:0;background:white}}
 </section>
 <section class="panel">
 <div class="panel-title">ANÁLISE GRÁFICA</div>
-<iframe src="{escape(report)}" title="Relatório gráfico de desempenho"></iframe>
+<iframe src="{escape(report)}?embedded=1" title="Relatório gráfico de desempenho"></iframe>
 </section>
 <section class="panel">
 <div class="panel-title">VÍDEOS DO ATLETA</div>
