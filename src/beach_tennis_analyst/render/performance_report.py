@@ -39,7 +39,6 @@ def _occupancy_matrix(trajectories: dict[str, list[PlayerFrame]]) -> list[list[f
         x = min(max(frame.x_m, 0.0), 7.999999)
         y = min(max(frame.y_m, 0.0), 7.999999)
         col = min(2, int(x / (8.0 / 3.0)))
-        # Display rows from net to baseline.
         depth = min(2, int(y / (8.0 / 3.0)))
         row = 2 - depth
         counts[row][col] += 1
@@ -53,7 +52,7 @@ def _heatmap_svg(trajectories: dict[str, list[PlayerFrame]]) -> str:
     width, height = 430, 340
     left, top, court_w, court_h = 35, 25, 360, 285
     parts = [
-        f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="Heatmap de ocupação da meia quadra">',
+        f'<svg class="heatmap" viewBox="0 0 {width} {height}" role="img" aria-label="Heatmap de ocupação da meia quadra">',
         '<rect width="100%" height="100%" rx="14" fill="#e8d2ad"/>',
         f'<rect x="{left}" y="{top}" width="{court_w}" height="{court_h}" fill="none" stroke="#ffffff" stroke-width="3"/>',
         f'<line x1="{left + court_w/2}" y1="{top}" x2="{left + court_w/2}" y2="{top + court_h}" stroke="#ffffff" stroke-width="2"/>',
@@ -148,10 +147,16 @@ def render_performance_report(
 .cards{{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}} .card,.panel{{background:white;border:1px solid var(--line);border-radius:16px;padding:18px}}
 .card span{{font-size:12px;font-weight:700}} .card strong{{display:block;font-size:30px;color:var(--navy);margin-top:7px}}
 .grid{{display:grid;grid-template-columns:1.05fr .95fr .95fr;gap:16px;margin-top:16px}} .panel h2{{font-size:16px;color:var(--navy);margin:0 0 14px}}
-.matrix{{width:100%;border-collapse:collapse;text-align:center}} .matrix th,.matrix td{{border:1px solid #dbe4ea;padding:18px 8px}} .matrix th{{font-size:11px}}
+.heatmap{{display:block;width:100%;height:auto}} .matrix{{width:100%;border-collapse:collapse;text-align:center}} .matrix th,.matrix td{{border:1px solid #dbe4ea;padding:18px 8px}} .matrix th{{font-size:11px}}
 .pair strong{{font-size:27px;color:var(--navy)}} .pair div{{padding:13px 0;border-bottom:1px solid var(--line)}} .pair div:last-child{{border-bottom:0}}
 .bottom{{display:grid;grid-template-columns:1.2fr .8fr;gap:16px;margin-top:16px}} table.stats{{width:100%;border-collapse:collapse}} .stats th,.stats td{{padding:12px;border-bottom:1px solid var(--line);text-align:left}} .stats th{{font-size:12px}}
-li{{margin:10px 0;line-height:1.4}} .note{{margin-top:16px;font-size:12px;color:#687b8d}} @media(max-width:900px){{.cards{{grid-template-columns:repeat(2,1fr)}}.grid,.bottom{{grid-template-columns:1fr}}}}
+li{{margin:10px 0;line-height:1.4}} .note{{margin-top:16px;font-size:12px;color:#687b8d}}
+body.embedded{{overflow:hidden;background:white}} body.embedded .page{{max-width:none;padding:8px}} body.embedded h1,body.embedded .sub,body.embedded .bottom{{display:none}}
+body.embedded .cards{{gap:6px}} body.embedded .card{{padding:7px 8px;border-radius:9px}} body.embedded .card span{{font-size:9px}} body.embedded .card strong{{font-size:18px;margin-top:3px}}
+body.embedded .grid{{grid-template-columns:1.05fr .92fr .85fr;gap:6px;margin-top:6px}} body.embedded .panel{{padding:7px;border-radius:9px}} body.embedded .panel h2{{font-size:10px;margin-bottom:6px}}
+body.embedded .heatmap{{max-height:215px}} body.embedded .matrix th,body.embedded .matrix td{{padding:7px 3px;font-size:10px}} body.embedded .matrix th{{font-size:8px}}
+body.embedded .pair div{{padding:5px 0;font-size:9px}} body.embedded .pair strong{{font-size:16px}}
+@media(max-width:900px){{.cards{{grid-template-columns:repeat(2,1fr)}}.grid,.bottom{{grid-template-columns:1fr}}}}
 </style></head><body><main class="page">
 <h1>Relatório de Análise de Desempenho – Beach Tennis</h1>
 <div class="sub">Vídeo: {escape(video_name)} &nbsp;|&nbsp; Escopo: meia quadra do lado da câmera &nbsp;|&nbsp; Atletas: near_left e near_right</div>
@@ -176,5 +181,7 @@ li{{margin:10px 0;line-height:1.4}} .note{{margin-top:16px;font-size:12px;color:
 <div class="note">A identidade é estabilizada por posição, ID do detector e assinatura visual da roupa no tronco.</div></div>
 <div class="panel"><h2>PRINCIPAIS INSIGHTS</h2><ul>{insight_html}</ul><div class="note">Os insights usam apenas métricas disponíveis no tracking da dupla. Métricas de rally/bola só aparecem quando a análise de bola estiver habilitada.</div></div>
 </section>
-</main></body></html>'''
+</main>
+<script>if(new URLSearchParams(window.location.search).get('embedded')==='1')document.body.classList.add('embedded');</script>
+</body></html>'''
     Path(output_path).write_text(html, encoding="utf-8")
