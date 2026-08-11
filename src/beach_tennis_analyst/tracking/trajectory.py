@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from math import hypot
 from statistics import median
-from typing import Iterable
 
 from beach_tennis_analyst.domain.models import (
     Confidence,
@@ -17,7 +17,7 @@ from beach_tennis_analyst.domain.models import (
 class TrajectoryConfig:
     smoothing_window: int = 5
     max_interpolation_gap_frames: int = 5
-    max_speed_mps: float = 9.0
+    max_speed_mps: float = 12.0
     max_acceleration_mps2: float = 16.0
     minimum_confidence: float = 0.35
 
@@ -44,7 +44,10 @@ class ConstantVelocityPredictor:
         valid = [
             frame
             for frame in history
-            if frame.observation_status not in {ObservationStatus.REJECTED, ObservationStatus.SUSPECT}
+            if frame.observation_status not in {
+                ObservationStatus.REJECTED,
+                ObservationStatus.SUSPECT,
+            }
             and frame.confidence.overall > 0.0
         ]
         if len(valid) < 2:
@@ -82,6 +85,12 @@ class TrajectoryProcessor:
         previous_valid: PlayerFrame | None = None
         previous_speed: float | None = None
         for frame in frames:
+            if frame.observation_status in {
+                ObservationStatus.SUSPECT,
+                ObservationStatus.REJECTED,
+            }:
+                output.append(frame)
+                continue
             if frame.confidence.overall < self.config.minimum_confidence:
                 output.append(replace(frame, observation_status=ObservationStatus.SUSPECT))
                 continue
@@ -108,7 +117,10 @@ class TrajectoryProcessor:
         output = list(frames)
         index = 0
         while index < len(output):
-            if output[index].observation_status not in {ObservationStatus.SUSPECT, ObservationStatus.REJECTED}:
+            if output[index].observation_status not in {
+                ObservationStatus.SUSPECT,
+                ObservationStatus.REJECTED,
+            }:
                 index += 1
                 continue
             start = index
@@ -155,13 +167,19 @@ class TrajectoryProcessor:
         radius = self.config.smoothing_window // 2
         output: list[PlayerFrame] = []
         for index, frame in enumerate(frames):
-            if frame.observation_status in {ObservationStatus.REJECTED, ObservationStatus.SUSPECT}:
+            if frame.observation_status in {
+                ObservationStatus.REJECTED,
+                ObservationStatus.SUSPECT,
+            }:
                 output.append(frame)
                 continue
             window = [
                 candidate
-                for candidate in frames[max(0, index - radius) : min(len(frames), index + radius + 1)]
-                if candidate.observation_status not in {
+                for candidate in frames[
+                    max(0, index - radius) : min(len(frames), index + radius + 1)
+                ]
+                if candidate.observation_status
+                not in {
                     ObservationStatus.REJECTED,
                     ObservationStatus.SUSPECT,
                 }
@@ -181,7 +199,10 @@ class TrajectoryProcessor:
         previous: PlayerFrame | None = None
         previous_speed: float | None = None
         for frame in frames:
-            if frame.observation_status in {ObservationStatus.REJECTED, ObservationStatus.SUSPECT}:
+            if frame.observation_status in {
+                ObservationStatus.REJECTED,
+                ObservationStatus.SUSPECT,
+            }:
                 output.append(replace(frame, speed_mps=None, acceleration_mps2=None))
                 continue
             if previous is None:
