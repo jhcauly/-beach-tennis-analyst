@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "beach-tennis-analyst"
+version = "0.1.0"
+description = "Computer vision system for physical, spatial and tactical beach tennis analysis."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "opencv-python>=4.10",
+  "pydantic>=2.8",
+  "pyyaml>=6.0",
+]
+
+[project.scripts]
+beach-tennis-analyze = "beach_tennis_analyst.cli:main"
+beach-tennis-calibrate = "beach_tennis_analyst.calibration.visual:main"
+beach-tennis-launcher = "beach_tennis_analyst.launcher:main"
+
+[project.optional-dependencies]
+vision = [
+  "ultralytics>=8.3",
+  "torch>=2.3",
+  "torchvision>=0.18",
+]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.6",
+  "mypy>=1.11",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
