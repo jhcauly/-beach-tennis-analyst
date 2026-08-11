@@ -9,7 +9,7 @@ import numpy as np
 
 from beach_tennis_analyst.calibration.camera_standard import validate_rear_server_camera
 from beach_tennis_analyst.calibration.court import BeachTennisCourt
-from beach_tennis_analyst.calibration.manual import ManualCalibration, PixelPoint
+from beach_tennis_analyst.calibration.manual import ManualCalibration
 from beach_tennis_analyst.calibration.projection import CourtProjector
 
 POINT_LABELS = (
@@ -22,18 +22,14 @@ POINT_LABELS = (
 SUPPORTED_REFERENCE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 
 
-def calibration_from_points(frame: np.ndarray, points: list[tuple[int, int]]) -> ManualCalibration:
-    if len(points) != 4:
-        raise ValueError("Exactly four points are required")
-    height, width = frame.shape[:2]
-    return ManualCalibration(
-        near_left=PixelPoint(*points[0]),
-        near_right=PixelPoint(*points[1]),
-        far_right=PixelPoint(*points[2]),
-        far_left=PixelPoint(*points[3]),
-        source_width_px=width,
-        source_height_px=height,
-    )
+def calibration_from_points(
+    points: list[tuple[float, float]],
+    *,
+    width_px: int,
+    height_px: int,
+) -> ManualCalibration:
+    """Build calibration while preserving near-left to far-left point order."""
+    return ManualCalibration.from_points(points, width_px, height_px)
 
 
 def draw_calibration_preview(frame: np.ndarray, calibration: ManualCalibration) -> np.ndarray:
@@ -68,7 +64,11 @@ def draw_calibration_preview(frame: np.ndarray, calibration: ManualCalibration) 
     return preview
 
 
-def top_down_preview(frame: np.ndarray, calibration: ManualCalibration, scale: int = 50) -> np.ndarray:
+def top_down_preview(
+    frame: np.ndarray,
+    calibration: ManualCalibration,
+    scale: int = 50,
+) -> np.ndarray:
     court = BeachTennisCourt()
     width = int(court.width_m * scale)
     height = int(court.length_m * scale)
@@ -113,7 +113,8 @@ def find_reference_image(video_path: str | Path) -> Path:
     expected = ", ".join(str(path) for path in searched)
     raise FileNotFoundError(
         f"Reference image not found for video '{video.name}'. "
-        f"Place an image with the same file name in a 'referencia' folder. Searched: {expected}"
+        f"Place an image with the same file name in a 'referencia' folder. "
+        f"Searched: {expected}"
     )
 
 
@@ -158,17 +159,37 @@ def run_visual_calibration(
                 cv2.LINE_AA,
             )
         instruction = "Left click 1-4 | right click undo | ENTER save | ESC cancel"
-        cv2.putText(canvas, instruction, (12, canvas.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            instruction,
+            (12, canvas.shape[0] - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
         cv2.imshow(window, canvas)
         key = cv2.waitKey(30) & 0xFF
         if key == 27:
             cv2.destroyAllWindows()
             raise RuntimeError("Calibration cancelled")
         if key in (10, 13) and len(points) == 4:
-            calibration = calibration_from_points(frame, points)
+            height, width = frame.shape[:2]
+            calibration = calibration_from_points(
+                points,
+                width_px=width,
+                height_px=height,
+            )
             report = validate_rear_server_camera(calibration)
             if not report.valid:
-                print(json.dumps({"valid": False, "warnings": report.warnings}, ensure_ascii=False, indent=2))
+                print(
+                    json.dumps(
+                        {"valid": False, "warnings": report.warnings},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
                 continue
             calibration.save(output_json)
             if preview_path is not None:
@@ -193,18 +214,28 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    calibration = run_visual_calibration(args.video, args.output, args.preview, args.top_down)
+    calibration = run_visual_calibration(
+        args.video,
+        args.output,
+        args.preview,
+        args.top_down,
+    )
     report = validate_rear_server_camera(calibration)
     projector = CourtProjector(calibration, BeachTennisCourt())
     ref_path = find_reference_image(args.video)
-    print(json.dumps({
-        "saved": str(args.output),
-        "reference_image": str(ref_path),
-        "valid": report.valid,
-        "perspective_ratio": report.perspective_ratio,
-        "center_offset_ratio": report.center_offset_ratio,
-        "reprojection_error_px": projector.reprojection_error_px(),
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "saved": str(args.output),
+                "reference_image": str(ref_path),
+                "valid": report.valid,
+                "perspective_ratio": report.perspective_ratio,
+                "center_offset_ratio": report.center_offset_ratio,
+                "reprojection_error_px": projector.reprojection_error_px(),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
