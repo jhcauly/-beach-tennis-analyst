@@ -104,7 +104,8 @@ def render_annotated_match(
     shot_by_frame = {shot.contact.frame_index: shot for shot in shots}
     try:
         for frame_index, _, frame in reader.frames():
-            _draw_projected_near_half_court(frame, projector)
+            if players.get(frame_index):
+                _draw_projected_near_half_court(frame, projector)
             for player in players.get(frame_index, []):
                 if player.athlete_id not in NEAR_IDS:
                     continue

@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import shutil
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from itertools import groupby
 from pathlib import Path
 from typing import Callable
+
+import cv2
 
 from beach_tennis_analyst.analytics.ball_report import build_ball_report
 from beach_tennis_analyst.analytics.motion import MotionSummary, summarize_motion
@@ -15,6 +18,8 @@ from beach_tennis_analyst.calibration.camera_standard import validate_rear_serve
 from beach_tennis_analyst.calibration.court import BeachTennisCourt
 from beach_tennis_analyst.calibration.depth_confidence import projection_confidence_for_y
 from beach_tennis_analyst.calibration.manual import ManualCalibration
+from beach_tennis_analyst.calibration.visual import load_reference_image
+from beach_tennis_analyst.calibration.view_gate import ReferenceViewGate
 from beach_tennis_analyst.calibration.projection import CourtProjector
 from beach_tennis_analyst.detection.player_detector import PlayerDetector, PlayerDetectorConfig
 from beach_tennis_analyst.domain.models import Confidence, IdentityStatus, ObservationStatus, PlayerFrame
@@ -66,6 +71,8 @@ class BeachTennisAnalysisPipeline:
         self.max_initialization_frames = max_initialization_frames
         self.track_near_only = track_near_only
         self.analyze_ball = analyze_ball
+        self._accepted_view_frames: set[int] = set()
+        self._view_segment_starts: set[int] = set()
 
     def run(
         self,
@@ -88,8 +95,20 @@ class BeachTennisAnalysisPipeline:
         if not camera_report.valid:
             raise ValueError("Calibration does not match the rear-camera-behind-server standard: " + "; ".join(camera_report.warnings))
 
+        if calibration.reference_image:
+            reference_path = Path(calibration.reference_image)
+            if not reference_path.is_absolute():
+                reference_path = Path(calibration_path).resolve().parent / reference_path
+            reference = cv2.imread(str(reference_path))
+            if reference is None:
+                raise FileNotFoundError(f"Calibration reference image not found: {reference_path}")
+        else:
+            reference, _ = load_reference_image(video_path)
+        view_gate = ReferenceViewGate(reference, calibration)
+        self._accepted_view_frames: set[int] = set()
+        self._view_segment_starts: set[int] = set()
         projector = CourtProjector(calibration, BeachTennisCourt())
-        raw = self._track_players(reader, projector, total_frames=metadata.frame_count, progress_callback=progress_callback)
+        raw = self._track_players(reader, projector, total_frames=metadata.frame_count, progress_callback=progress_callback, view_gate=view_gate)
         required_ids = {"near_left", "near_right"}
         if not self.track_near_only:
             required_ids |= {"far_left", "far_right"}
@@ -98,15 +117,37 @@ class BeachTennisAnalysisPipeline:
             raise RuntimeError(f"Could not build required trajectories: {sorted(missing)}")
 
         processor = TrajectoryProcessor(self.trajectory_config)
-        trajectories = {athlete_id: processor.process(frames) for athlete_id, frames in raw.items()}
-        athlete_summaries = {athlete_id: summarize_motion(frames) for athlete_id, frames in trajectories.items()}
+        trajectories = {}
+        for athlete_id, frames in raw.items():
+            segments: list[list[PlayerFrame]] = [[]]
+            for frame in frames:
+                if segments[-1] and any(
+                    segments[-1][-1].frame_index < start <= frame.frame_index
+                    for start in self._view_segment_starts
+                ):
+                    segments.append([])
+                segments[-1].append(frame)
+            trajectories[athlete_id] = [item for segment in segments for item in processor.process(segment)]
+        athlete_summaries = {athlete_id: summarize_motion(frames, segment_starts=self._view_segment_starts) for athlete_id, frames in trajectories.items()}
         pair_frames = {"near": build_pair_frames(trajectories["near_left"], trajectories["near_right"], team_side="near")}
         if not self.track_near_only:
             pair_frames["far"] = build_pair_frames(trajectories["far_left"], trajectories["far_right"], team_side="far")
         pair_summaries = {side: summarize_pair(frames) for side, frames in pair_frames.items() if frames}
 
         if self.analyze_ball:
-            ball = BallAnalysisPipeline(projector).run(VideoReader(video_path).frames(), trajectories)
+            # Reset ball prediction, interpolation and rally state at camera cuts.
+            groups = groupby(VideoReader(video_path).frames(),
+                             key=lambda item: item[0] in self._accepted_view_frames)
+            parts = [BallAnalysisPipeline(projector).run(segment, trajectories)
+                     for accepted, segment in groups if accepted]
+            ball = BallPipelineOutputs(
+                detections=tuple(item for part in parts for item in part.detections),
+                track=tuple(item for part in parts for item in part.track),
+                contacts=tuple(item for part in parts for item in part.contacts),
+                rallies=tuple(replace(item, rally_id=f"rally_{index:04d}")
+                              for index, item in enumerate(
+                                  (rally for part in parts for rally in part.rallies), start=1)),
+            )
             shots = build_shot_events(list(ball.contacts), list(ball.rallies), list(ball.track), projector)
         else:
             ball = BallPipelineOutputs(detections=(), track=(), contacts=(), rallies=())
@@ -122,11 +163,14 @@ class BeachTennisAnalysisPipeline:
 
         return SessionOutputs(metadata, trajectories, athlete_summaries, pair_frames, pair_summaries, ball, shots, output)
 
-    def _track_players(self, reader: VideoReader, projector: CourtProjector, *, total_frames: int, progress_callback: ProgressCallback | None = None) -> dict[str, list[PlayerFrame]]:
+    def _track_players(self, reader: VideoReader, projector: CourtProjector, *, total_frames: int, progress_callback: ProgressCallback | None = None, view_gate: ReferenceViewGate) -> dict[str, list[PlayerFrame]]:
         detector = PlayerDetector(self.detector_config)
         tracker = FourPlayerTracker(projector, near_only=self.track_near_only)
         raw: dict[str, list[PlayerFrame]] = {}
         frames_seen = 0
+        initialization_attempts = 0
+        waiting_for_view = True
+        view_matches = 0
         max_detector_candidates = 0
         last_initialization_error: str | None = None
         initialized = False
@@ -147,19 +191,34 @@ class BeachTennisAnalysisPipeline:
             percent = min(100.0, (frames_seen / total) * 100.0)
             remaining = max(0, total_frames - frames_seen)
             eta = remaining / rate if rate > 0 else None
-            progress_callback({"event": "analysis_progress", "phase": "tracking", "processed_frames": frames_seen, "total_frames": total_frames, "percent": percent, "elapsed_s": elapsed, "processing_fps": rate, "eta_s": eta, "initialized": initialized})
+            progress_callback({"event": "analysis_progress", "phase": "waiting_for_reference_view" if waiting_for_view else "tracking", "processed_frames": frames_seen, "total_frames": total_frames, "percent": percent, "elapsed_s": elapsed, "processing_fps": rate, "eta_s": eta, "initialized": initialized})
 
         for frame_index, timestamp_s, frame in reader.frames():
             frames_seen += 1
+            if not view_gate.matches(frame):
+                waiting_for_view = True
+                view_matches = 0
+                emit_progress()
+                continue
+            view_matches += 1
+            if waiting_for_view:
+                # Require a stable return, but retain athlete appearance/identity history.
+                if view_matches < 3:
+                    emit_progress()
+                    continue
+                self._view_segment_starts.add(frame_index)
+                waiting_for_view = False
+            self._accepted_view_frames.add(frame_index)
             detections = detector.detect(frame)
             if not initialized:
+                initialization_attempts += 1
                 max_detector_candidates = max(max_detector_candidates, len(detections))
             try:
                 assignments = tracker.update(detections, frame_index)
             except TrackingInitializationError as exc:
                 last_initialization_error = str(exc)
                 emit_progress()
-                if frames_seen >= self.max_initialization_frames:
+                if initialization_attempts >= self.max_initialization_frames:
                     target = "near-side two-player" if self.track_near_only else "four-player"
                     raise TrackingInitializationError(f"Could not initialize {target} tracking within {self.max_initialization_frames} frames; max detector candidates in one frame={max_detector_candidates}; last initialization error: {last_initialization_error}") from exc
                 continue
@@ -176,7 +235,7 @@ class BeachTennisAnalysisPipeline:
 
         emit_progress(force=True)
         if not initialized:
-            detail = last_initialization_error or "no valid initialization was observed"
+            detail = last_initialization_error or "the calibrated camera view never became stable with visible athletes"
             target = "near-side two-player" if self.track_near_only else "four-player"
             raise TrackingInitializationError(f"Video ended before {target} tracking could initialize; frames inspected={frames_seen}; max detector candidates in one frame={max_detector_candidates}; last initialization error: {detail}")
         return raw
@@ -208,6 +267,7 @@ class BeachTennisAnalysisPipeline:
             "video": {"path": str(metadata.path), "fps": metadata.fps, "frame_count": metadata.frame_count, "width_px": metadata.width_px, "height_px": metadata.height_px, "duration_s": metadata.duration_s, "codec": metadata.codec},
             "tracking_scope": "near_pair" if self.track_near_only else "all_four_players",
             "court_scope": "camera_side_of_net" if self.track_near_only else "full_court",
+            "camera_view_filter": {"enabled": True, "accepted_frames": len(self._accepted_view_frames), "skipped_frames": metadata.frame_count - len(self._accepted_view_frames)},
             "identity_method": "detector_id+court_position+clothing_appearance",
             "athletes": {athlete_id: asdict(summary) for athlete_id, summary in athlete_summaries.items()},
             "pairs": {side: asdict(summary) for side, summary in pair_summaries.items()},

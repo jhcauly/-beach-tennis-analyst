@@ -19,7 +19,9 @@ class MotionSummary:
     maximum_deceleration_mps2: float
 
 
-def summarize_motion(frames: Iterable[PlayerFrame]) -> MotionSummary:
+def summarize_motion(
+    frames: Iterable[PlayerFrame], *, segment_starts: set[int] | None = None
+) -> MotionSummary:
     ordered = sorted(frames, key=lambda item: item.frame_index)
     if not ordered:
         raise ValueError("At least one frame is required")
@@ -46,10 +48,13 @@ def summarize_motion(frames: Iterable[PlayerFrame]) -> MotionSummary:
         )
 
     total_distance = 0.0
+    duration = 0.0
     for previous, current in zip(valid, valid[1:]):
+        if segment_starts and any(previous.frame_index < start <= current.frame_index for start in segment_starts):
+            continue
+        duration += max(0.0, current.timestamp_s - previous.timestamp_s)
         total_distance += hypot(current.x_m - previous.x_m, current.y_m - previous.y_m)
 
-    duration = max(0.0, valid[-1].timestamp_s - valid[0].timestamp_s)
     speeds = [frame.speed_mps for frame in valid if frame.speed_mps is not None]
     accelerations = [
         frame.acceleration_mps2 for frame in valid if frame.acceleration_mps2 is not None

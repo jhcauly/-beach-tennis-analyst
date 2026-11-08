@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -191,6 +192,12 @@ def run_visual_calibration(
                     )
                 )
                 continue
+            # Save the clean frame, never the preview containing clicked markers.
+            saved_reference = Path(output_json).resolve().with_suffix(".reference.png")
+            saved_reference.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(saved_reference), frame):
+                raise RuntimeError(f"Could not save reference image: {saved_reference}")
+            calibration = replace(calibration, reference_image=saved_reference.name)
             calibration.save(output_json)
             if preview_path is not None:
                 cv2.imwrite(str(preview_path), draw_calibration_preview(frame, calibration))

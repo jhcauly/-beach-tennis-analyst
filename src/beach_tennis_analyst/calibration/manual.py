@@ -25,6 +25,7 @@ class ManualCalibration:
     far_left: PixelPoint
     source_width_px: int
     source_height_px: int
+    reference_image: str | None = None
 
     @property
     def source_points(self) -> np.ndarray:
@@ -67,6 +68,7 @@ class ManualCalibration:
             far_left=PixelPoint(**payload["far_left"]),
             source_width_px=int(payload["source_width_px"]),
             source_height_px=int(payload["source_height_px"]),
+            reference_image=payload.get("reference_image"),
         )
         calibration.validate()
         return calibration
